@@ -27,8 +27,6 @@ public class TypesenseSinkConnector extends SinkConnector {
         String primaryKeysEnabled = config.getString(primaryKeyenabled);
         System.out.println("The SINK CONNECTOR ParseBoolean");
         System.out.println(primaryKeysEnabled);
-        System.out.println("The SINK CONNECTOR ParseBoolean");
-        System.out.println(primaryKeysEnabled);
     }
 
     @Override

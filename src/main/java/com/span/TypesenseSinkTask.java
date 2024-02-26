@@ -6,11 +6,12 @@ import org.typesense.api.*;
 import org.typesense.model.*;
 import org.typesense.resources.*;
 
+import java.io.IOException;
 import java.lang.Override;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
-import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -23,6 +24,7 @@ public class TypesenseSinkTask extends SinkTask {
     private Client typesenseClient;
     private Map<String, Boolean> collectionCreatedMap = new HashMap<>();
     private String primaryKeysEnabled;
+    final ObjectMapper objectMapper = new ObjectMapper();
     @Override
     public String version() {
         return "1.0";
@@ -40,40 +42,104 @@ public class TypesenseSinkTask extends SinkTask {
         nodes.add(new Node("http", "150.136.139.228", "8108"));
         Configuration configuration = new Configuration(nodes, Duration.ofSeconds(2), "xyz");
         typesenseClient = new Client(configuration);
-        // Set the primary key enabled flag from the configuration
-        System.out.println("The SINK TASK ParseBoolean");
-        System.out.println(primaryKeysEnabled);
-        System.out.println("The SINK TASK ParseBoolean");
-        System.out.println(primaryKeysEnabled);
     }
 
     @Override
     public void put(Collection<SinkRecord> records) {
         // Iterate over the records and index them into Typesense
-        final ObjectMapper objectMapper = new ObjectMapper();
         for (SinkRecord record : records) {
             try {
                 String topic = record.topic();
-                Map<String, Object> jsonMap = objectMapper.readValue(record.value().toString(), new TypeReference<Map<String, Object>>() {});
-
+                boolean idSet = false;
+                Map<String, Object> jsonMap = flattenJson(objectMapper.readValue(record.value().toString(), new TypeReference<Map<String, Object>>() {}), primaryKeysEnabled,idSet);
                 // Convert all fields to their appropriate types
-                convertFieldTypes(jsonMap, primaryKeysEnabled);
-                System.out.println("The SINK TASK ParseBoolean in PUT");
-                System.out.println(primaryKeysEnabled);
+                convertFieldTypes(jsonMap);
                 // Create collection schema if not already created for this topic
                 if (!collectionCreatedMap.containsKey(topic) || !collectionCreatedMap.get(topic)) {
                     createCollectionSchema(topic, jsonMap.keySet());
                     collectionCreatedMap.put(topic, true);
                 }
+                // Check for missing fields in jsonMap and add them with default values or null
+                CollectionSchema collectionSchema = typesenseClient.collections(topic).retrieve();
+                for (Field field : collectionSchema.getFields()) {
+                    if (!jsonMap.containsKey(field.getName())) {
+                        // Add missing field to jsonMap with default value or null
+                        jsonMap.put(field.getName(), "Null");
+                    }
+                }
 
                 // Index the document into Typesense
-                typesenseClient.collections(topic).documents().upsert(jsonMap);
+                if (primaryKeysEnabled.equalsIgnoreCase("true")) {
+                    typesenseClient.collections(topic).documents().upsert(jsonMap);
+                }
+                else{
+                    typesenseClient.collections(topic).documents().create(jsonMap);
+                }
+                
             } catch (Exception e) {
                 e.printStackTrace();
             }
         }
     }
 
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> flattenJson(Map<String, Object> jsonMap, String primaryKeyEnabled, boolean idSet) {
+        Map<String, Object> flattenedMap = new LinkedHashMap<>();
+
+        try {
+            if (primaryKeyEnabled.equalsIgnoreCase("true") && !idSet) {
+                for (Map.Entry<String, Object> entry : jsonMap.entrySet()) {
+                    if (entry.getValue() != null) {
+                        flattenedMap.put("id", entry.getValue().toString());
+                        idSet = true; // Set the flag to true after setting the "id" field
+                        break; // Break out of the loop after setting the "id" field
+                    }
+                }
+            }
+            for (Map.Entry<String, Object> entry : jsonMap.entrySet()) {
+                String key = entry.getKey();
+                Object value = entry.getValue();
+                if (value instanceof String && ((String) value).startsWith("{") && ((String) value).endsWith("}")) {
+                    // Parse the JSON string into a Map
+                    Map<String, Object> nestedMap = objectMapper.readValue((String) value, new TypeReference<Map<String, Object>>() {});
+                    // Flatten the nested JSON recursively
+                    Map<String, Object> flattenedNestedMap = flattenJson(nestedMap, primaryKeyEnabled, idSet);
+                    // Prefix keys with the original key and add to flattenedMap
+                    for (Map.Entry<String, Object> nestedEntry : flattenedNestedMap.entrySet()) {
+                        flattenedMap.put(key + "_" + nestedEntry.getKey(), nestedEntry.getValue());
+                    }
+                } else if (value instanceof Map) {
+                    // Recursively flatten nested object
+                    Map<String, Object> flattenedNestedMap = flattenJson((Map<String, Object>) value, primaryKeyEnabled, idSet);
+                    // Prefix keys with the original key and add to flattenedMap
+                    for (Map.Entry<String, Object> nestedEntry : flattenedNestedMap.entrySet()) {
+                        if (nestedEntry.getValue() != null) {
+                            flattenedMap.put(key + "_" + nestedEntry.getKey(), nestedEntry.getValue());
+                        } else {
+                            flattenedMap.put(key + "_" + nestedEntry.getKey(), "Null");
+                        }
+                    }
+                } else {
+                    // Check if the field is not present in the document
+                    if (!jsonMap.containsKey(key)) {
+                        // Use default value or existing value
+                        flattenedMap.put(key, null); // Use null as default value
+                    } else {
+                        if (value != null) {
+                            flattenedMap.put(key, value);
+                        }
+                    }
+                }
+            }
+        } catch (NullPointerException e) {
+            e.printStackTrace();
+            throw e;
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    
+        return flattenedMap;
+    }
     @Override
     public void stop() {
     }
@@ -88,7 +154,7 @@ public class TypesenseSinkTask extends SinkTask {
         // Create collection schema
         CollectionSchema collectionSchema = new CollectionSchema()
                 .name(topic)
-                .fields(typesenseFields);
+                .fields(typesenseFields).enableNestedFields(true);
 
         // Create the collection in Typesense
         try {
@@ -98,25 +164,21 @@ public class TypesenseSinkTask extends SinkTask {
         }
     }
 
-   private void convertFieldTypes(Map<String, Object> jsonMap,String primaryKeyEnabled) {
-    // Get the existing keys to avoid ConcurrentModificationException
-    Set<String> keys = new HashSet<>(jsonMap.keySet());
-
-    // Convert all fields to their appropriate types
-    for (String key : keys) {
-        Object value = jsonMap.get(key);
-        // Convert non-string values to strings
-        if (value == null) {
-            jsonMap.put(key, "null");
+    private void convertFieldTypes(Map<String, Object> jsonMap) {
+        Map<String, Object> convertedMap = new HashMap<>();
+        for (Map.Entry<String, Object> entry : jsonMap.entrySet()) {
+            String key = entry.getKey();
+            Object value = entry.getValue();
+            if (value == null) {
+                convertedMap.put(key, "null");
+            } else if (!(value instanceof String)) {
+                convertedMap.put(key, value.toString());
+            } else {
+                convertedMap.put(key, value);
+            }
         }
-        if (value != null && !(value instanceof String)) {
-            jsonMap.put(key, value.toString());
-        }
+        jsonMap.clear();
+        jsonMap.putAll(convertedMap);
     }
-    System.out.println("The convertFieldTypes ParseBoolean: " + primaryKeyEnabled); // This line was adjusted
-    if (primaryKeyEnabled.equalsIgnoreCase("true")) {
-        String firstField = jsonMap.keySet().iterator().next();
-        jsonMap.put("id", jsonMap.get(firstField));
-    }
-}
+    
 }
