@@ -39,8 +39,8 @@ public class TypesenseSinkTask extends SinkTask {
         AbstractConfig config = new AbstractConfig(TypesenseSinkConnector.CONFIG_DEF, props);
         primaryKeysEnabled = config.getString(TypesenseSinkConnector.primaryKeyenabled);
         List<Node> nodes = new ArrayList<>();
-        nodes.add(new Node("http", "150.136.139.228", "8108"));
-        Configuration configuration = new Configuration(nodes, Duration.ofSeconds(2), "xyz");
+        nodes.add(new Node("http", config.getString("Host"), config.getString("Port")));
+        Configuration configuration = new Configuration(nodes, Duration.ofSeconds(2), config.getString("API_Key"));
         typesenseClient = new Client(configuration);
     }
 

@@ -12,7 +12,10 @@ import java.util.Map;
 public class TypesenseSinkConnector extends SinkConnector {
     public static final String primaryKeyenabled = "primaryKeyenabled";
     static final ConfigDef CONFIG_DEF = new ConfigDef()
-        .define(primaryKeyenabled, ConfigDef.Type.STRING, ConfigDef.Importance.HIGH, "Enable primary key for document ID generation");
+        .define(primaryKeyenabled, ConfigDef.Type.STRING, ConfigDef.Importance.HIGH, "Enable primary key for document ID generation")
+        .define("Host", ConfigDef.Type.STRING, ConfigDef.Importance.HIGH, "Enable Typesense Host Name")
+        .define("API_Key", ConfigDef.Type.STRING, ConfigDef.Importance.HIGH, "Enable Typesense API KEY")
+        .define("Port", ConfigDef.Type.STRING, ConfigDef.Importance.HIGH, "Enable Typesense Port");
     private Map<String, String> props;
     @Override
     public String version() {
