@@ -1,4 +1,5 @@
 package com.span;
+
 import org.apache.kafka.common.config.AbstractConfig;
 import org.apache.kafka.connect.sink.SinkRecord;
 import org.apache.kafka.connect.sink.SinkTask;
@@ -8,35 +9,43 @@ import org.typesense.resources.*;
 
 import java.io.IOException;
 import java.lang.Override;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
+import java.util.Date;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.TimeZone;
 import java.time.Duration;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-
 
 public class TypesenseSinkTask extends SinkTask {
     private Client typesenseClient;
     private Map<String, Boolean> collectionCreatedMap = new HashMap<>();
     private String primaryKeysEnabled;
     final ObjectMapper objectMapper = new ObjectMapper();
+    private AbstractConfig config;
+
     @Override
     public String version() {
         return "1.0";
     }
-    public TypesenseSinkTask(){
+
+    public TypesenseSinkTask() {
 
     }
 
     @Override
     public void start(Map<String, String> props) {
         // Initialize your Typesense client here
-        AbstractConfig config = new AbstractConfig(TypesenseSinkConnector.CONFIG_DEF, props);
+        config = new AbstractConfig(TypesenseSinkConnector.CONFIG_DEF, props);
         primaryKeysEnabled = config.getString(TypesenseSinkConnector.primaryKeyenabled);
         List<Node> nodes = new ArrayList<>();
         nodes.add(new Node("http", config.getString("Host"), config.getString("Port")));
@@ -51,9 +60,11 @@ public class TypesenseSinkTask extends SinkTask {
             try {
                 String topic = record.topic();
                 boolean idSet = false;
-                Map<String, Object> jsonMap = flattenJson(objectMapper.readValue(record.value().toString(), new TypeReference<Map<String, Object>>() {}), primaryKeysEnabled,idSet);
+                Map<String, Object> jsonMap = flattenJson(
+                        objectMapper.readValue(record.value().toString(), new TypeReference<Map<String, Object>>() {
+                        }), primaryKeysEnabled, idSet);
                 // Convert all fields to their appropriate types
-                convertFieldTypes(jsonMap);
+                convertFieldTypes(jsonMap, config.getString("Timestamps"),config.getString("Mask"),config.getInt("Mask Limit"));
                 // Create collection schema if not already created for this topic
                 if (!collectionCreatedMap.containsKey(topic) || !collectionCreatedMap.get(topic)) {
                     createCollectionSchema(topic, jsonMap.keySet());
@@ -71,11 +82,10 @@ public class TypesenseSinkTask extends SinkTask {
                 // Index the document into Typesense
                 if (primaryKeysEnabled.equalsIgnoreCase("true")) {
                     typesenseClient.collections(topic).documents().upsert(jsonMap);
-                }
-                else{
+                } else {
                     typesenseClient.collections(topic).documents().create(jsonMap);
                 }
-                
+
             } catch (Exception e) {
                 e.printStackTrace();
             }
@@ -101,7 +111,9 @@ public class TypesenseSinkTask extends SinkTask {
                 Object value = entry.getValue();
                 if (value instanceof String && ((String) value).startsWith("{") && ((String) value).endsWith("}")) {
                     // Parse the JSON string into a Map
-                    Map<String, Object> nestedMap = objectMapper.readValue((String) value, new TypeReference<Map<String, Object>>() {});
+                    Map<String, Object> nestedMap = objectMapper.readValue((String) value,
+                            new TypeReference<Map<String, Object>>() {
+                            });
                     // Flatten the nested JSON recursively
                     Map<String, Object> flattenedNestedMap = flattenJson(nestedMap, primaryKeyEnabled, idSet);
                     // Prefix keys with the original key and add to flattenedMap
@@ -110,7 +122,8 @@ public class TypesenseSinkTask extends SinkTask {
                     }
                 } else if (value instanceof Map) {
                     // Recursively flatten nested object
-                    Map<String, Object> flattenedNestedMap = flattenJson((Map<String, Object>) value, primaryKeyEnabled, idSet);
+                    Map<String, Object> flattenedNestedMap = flattenJson((Map<String, Object>) value, primaryKeyEnabled,
+                            idSet);
                     // Prefix keys with the original key and add to flattenedMap
                     for (Map.Entry<String, Object> nestedEntry : flattenedNestedMap.entrySet()) {
                         if (nestedEntry.getValue() != null) {
@@ -137,9 +150,10 @@ public class TypesenseSinkTask extends SinkTask {
         } catch (IOException e) {
             e.printStackTrace();
         }
-    
+
         return flattenedMap;
     }
+
     @Override
     public void stop() {
     }
@@ -164,21 +178,64 @@ public class TypesenseSinkTask extends SinkTask {
         }
     }
 
-    private void convertFieldTypes(Map<String, Object> jsonMap) {
+    private void convertFieldTypes(Map<String, Object> jsonMap, String timestampsConfig,String MaskConfig, Integer maskchar) {
         Map<String, Object> convertedMap = new HashMap<>();
+        Set<String> timestampFields = new HashSet<>(Arrays.asList(timestampsConfig.split(",")));
+        Set<String> maskFields = new HashSet<>(Arrays.asList(MaskConfig.split(",")));
         for (Map.Entry<String, Object> entry : jsonMap.entrySet()) {
             String key = entry.getKey();
             Object value = entry.getValue();
+
+            // Handle null values
             if (value == null) {
                 convertedMap.put(key, "null");
-            } else if (!(value instanceof String)) {
-                convertedMap.put(key, value.toString());
+                continue;
+            }
+
+            // Convert epoch time to date time for specified fields
+            if (timestampFields.contains(key) && value instanceof Long) {
+                // Convert epoch time to date time
+                long epochTime = (Long) value;
+                Date date = new Date(epochTime); // Convert milliseconds directly
+                SimpleDateFormat sdf = new SimpleDateFormat("MM/dd/yyyy, h:mm:ss a", Locale.ENGLISH);
+                sdf.setTimeZone(TimeZone.getTimeZone("UTC")); // Set the timezone to UTC
+                convertedMap.put(key, sdf.format(date));
             } else {
-                convertedMap.put(key, value);
+                if(maskFields.contains(key)){
+                    String maskedValue = maskValue(value.toString(), maskchar, '*');
+                    convertedMap.put(key, maskedValue);
+                }
+                else{
+                    if (!(value instanceof String)) {
+                        convertedMap.put(key, value.toString());
+                    } else {
+                        // Copy other fields as they are
+                        convertedMap.put(key, value);
+                    }
+                }          
             }
         }
+        // Update the original map
         jsonMap.clear();
         jsonMap.putAll(convertedMap);
     }
+
+    private String maskValue(String value, int visibleChars, char maskChar) {
+        if (value.length() <= visibleChars) {
+            return value;
+        }
     
+        StringBuilder maskedValue = new StringBuilder();
+        for (int i = 0; i < value.length(); i++) {
+            if (i < value.length() - visibleChars) {
+                maskedValue.append(maskChar);
+            } else {
+                maskedValue.append(value.charAt(i));
+            }
+        }
+    
+        return maskedValue.toString();
+    }
+    
+
 }

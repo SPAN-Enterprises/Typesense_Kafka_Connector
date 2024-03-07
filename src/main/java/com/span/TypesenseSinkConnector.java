@@ -15,7 +15,10 @@ public class TypesenseSinkConnector extends SinkConnector {
         .define(primaryKeyenabled, ConfigDef.Type.STRING, ConfigDef.Importance.HIGH, "Enable primary key for document ID generation")
         .define("Host", ConfigDef.Type.STRING, ConfigDef.Importance.HIGH, "Enable Typesense Host Name")
         .define("API_Key", ConfigDef.Type.STRING, ConfigDef.Importance.HIGH, "Enable Typesense API KEY")
-        .define("Port", ConfigDef.Type.STRING, ConfigDef.Importance.HIGH, "Enable Typesense Port");
+        .define("Port", ConfigDef.Type.STRING, ConfigDef.Importance.HIGH, "Enable Typesense Port")
+        .define("Timestamps", ConfigDef.Type.STRING, null, ConfigDef.Importance.LOW, "To Convert as DateTime")
+        .define("Mask", ConfigDef.Type.STRING, null, ConfigDef.Importance.LOW, "To Mask Fields")
+        .define("Mask Limit", ConfigDef.Type.INT, 1, ConfigDef.Importance.LOW, "Mask Characters");
     private Map<String, String> props;
     @Override
     public String version() {
