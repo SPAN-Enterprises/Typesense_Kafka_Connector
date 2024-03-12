@@ -141,6 +141,9 @@ public class TypesenseSinkTask extends SinkTask {
                         if (value != null) {
                             flattenedMap.put(key, value);
                         }
+                        else{
+                            flattenedMap.put(key, null);
+                        }
                     }
                 }
             }
